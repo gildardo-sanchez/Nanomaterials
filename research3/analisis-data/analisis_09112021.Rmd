@@ -1,0 +1,473 @@
+---
+title: "Análisis a los datos del laboratorio - Nanobiotech labs"
+author: "Kaled Corona-Romero"
+date: "09/Nov/2021"
+output:
+  html_document:
+    df_print: paged
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+
+```{r librerias}
+# Import libraries
+library(readr)
+library(tibble)
+library(dplyr)
+library(ggplot2) # For graphics
+library(moments) # For normal test anaylisis
+library(psych) # For plot histograms
+library(corrplot) # For generate the heatmap
+library(MASS)
+```
+
+
+# Introducción
+
+A principios del semestre Ago-Dic 2021 se realizaró la síntesis de nuevas nanopartículas de ZnO dopado con elementos lantanoides. Se utilizó un modelo de perceptrón multicapa para encontrar un modelo que ajuste a los datos y nos permita predecir las capacidades antimicrobianas para nuevas configuraciones de los parámetros del compuesto. Los resultados del perceptrón multicapa (PMC) fueron inconcluyentes, y se encontraron errores de coherencia en el mismo modelo. El modelo convergia a una solución demasiado rápido (overfitting). Es debido a esto que se realizará un análisis a detalle de los datos para ver a qué se debió ese problema.
+
+# Objetivos
+En las conversaciones que tuve que Gil, llegamos a la conclusión que un buen aproximamiento a mejorar el modelo es mediante la normalización de la base de datos. En corridas anteriores, había normalizado solo la variable objetivo y declarado las variables predictoras como etiquetas y se obtuvo un buen resultado. Sin embargo, parece que esa aproximación está mal. Por lo que el objetivo principal de este análisis es normalizar la base de datos usando z-score (estandarización) y sacar una columna con la Min-max para comparar con cual normalización funciona mejor el modelo. Seguido de la normalización, se realizarán pruebas descriptivas de los datos, una prueba de normalidad y ver si se requiere una transformación.
+
+
+# Código y demás talacha
+```{r}
+# Leemos las bases de datos para las bacterias Straphilococcus aureus y Escherichia coli
+database.EC <- read_csv("/media/veracrypt2/bacterias_materiales/bacterias_nanomateriales_2021/data/csv/06102021/dataset_06102021_v2_EC.csv")
+database.SA <- read_csv("/media/veracrypt2/bacterias_materiales/bacterias_nanomateriales_2021/data/csv/06102021/dataset_06102021_v2_SA.csv")
+```
+```{r}
+# Limpiamos la base de datos
+# Esto es: Eliminar columnas sin información y asegurarnos que las columnas si pertenecen al tipo de dato especificado
+database.EC <- database.EC[,-c(7,8,9,10)]
+database.SA <- database.SA[,-c(7,8,9,10)]
+```
+
+## Realizamos una descripción de los datos
+
+```{r}
+# Primero la descripción básica para EC
+summary(database.EC)
+```
+Me parece que de los predictores no se puede sacar información relevante, salvo los máximos y mínimos de cada categoría, y la frecuencia de valores (la cual es homogenea en cada columna). Para la columna Abs, me parece que podría existir una gran varianza entre los datos, y a primera vista la distribución de los datos no parece ser homogenea.
+
+Revisemos una gráfica de cajas y bigotes para ver la localización de los puntos de interés
+```{r}
+ggplot(data = database.EC, aes(y = Abs)) +
+  geom_boxplot(fill = "light gray") + ggtitle("Boxplot: Database EC")
+```
+Como se apreció con la descripción la mediana se encuentra muy cercana al tercer cuartil, existe una distancia grande entre el primer y el tercer cuartil, aún así, no parecen existir valores que se consideren como outliers. Ya por último para terminar con la descripción, analizaremos la distribución de los datos.
+
+
+
+```{r}
+hist(database.EC[[6]], main = "Histogram of Absorvance (EC)", xlab = "Absorvance", breaks = 30)
+```
+
+Con esto último, nos podemos dar una idea que los datos no parecen seguir una distribución normal, parecerían ser más una logarítmica.
+Ahora analizamos el otro conjunto de datos.
+
+
+```{r}
+# Descripción para SA
+summary(database.SA)
+```
+Aquí encontramos algo extraño en la columna de la absorvancia. Se escala muy rápido del 3rd cuartil al valor máximo. Procedemos a ver el gráfico de caja y bigotes.
+
+```{r}
+ggplot(data = database.SA, aes(y = Abs)) +
+  geom_boxplot(fill = "light gray") + ggtitle("Boxplot: Database SA")
+```
+Parece ser que existen varios valores que se consideran outliers. Falta analisar cómo es el comportamiento de los datos analizando un solo tipo de material. Antes de eso, pasaremos a revisar el histograma.
+
+```{r}
+hist(database.SA[[6]], main = "Histogram of Absorvance (SA)", xlab = "Absorvance", breaks = 30)
+```
+El histograma verifica la existencia de valores poco frecuentes. Aún así, me parece que podrían estar bien. Tendremos que analizar esos valores para los cuales la absorvancia es mayor a 0.5.
+
+
+### Hipótesis
+Los outliers son generados porque se está tomando encuenta todos los materiales. Si se toman por separado, no deberían generar outliers.
+
+
+```{r}
+# Convertimos la base de datos a una estructura tibble (como un dataframe en pandas)
+database.SA <- tibble(database.SA)
+database.EC <- tibble(database.EC)
+```
+
+```{r}
+# Separamos los datos por sus respectivos nanomateriales SA
+separado.materiales <- database.SA %>% group_by(a)
+```
+
+```{r}
+separado.materiales %>% summarise(
+  Media = mean(Abs),
+  Varianza = var(Abs),
+  SD = sd(Abs),
+  MAX = max(Abs),
+  Min = min(Abs)
+)
+```
+La codificación la "a" un parámetro de celda para las nanopartículas es la siguiente:
+* 3.25 -> ZnEr
+* 3.242 -> ZnNd
+* 3.254 -> ZnSm
+* 3.245 -> ZnCe
+* 0.0 -> Control
+
+Basado en los datos anteriores, el ZnEr y el ZnCe muestran una desviación estandar más grande que su media, además de valores máximos bastante grandes.
+
+Lo que me hace pensar que se debe a que no estoy tomando encuenta que estos datos se encuentran juntos los 3 tratamientos. Y en las gráficas de tiempo y ratio de supervivencia de las basterias (gráfico proporcionado por el lab) se muestra una diferencia significativa del tratamiento C1 a los tratamientos C2 y C3.
+
+Codificación del tratamiento (Dope):
+* C1 -> 2.5
+* C2 -> 5
+* C3 -> 10
+
+```{r}
+# Calculamos los siguientes estadísticcos para la configuración ZnEr C1
+separado.materiales %>% filter(Dope == 2.5, a == 3.250) %>% summarise(
+  Media = mean(Abs),
+  Varianza = var(Abs),
+  SD = sd(Abs),
+  MAX = max(Abs),
+  Min = min(Abs)
+)
+```
+```{r}
+# Guardamos el filtro en una variable y luego la graficamos
+var.temp <- separado.materiales %>% filter(Dope == 2.5, a == 3.250)
+
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_point() + ggtitle("Scatterplot ZnEr (SA)")
+  
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_boxplot() + ggtitle("Boxplot ZnEr 2.5 (SA)")
+```
+
+Aquí evidentemente existen outliers. Parece se que mientras el tiempo aumenta, los valores para la absorvancia se dispersan. También pasará para los demás compuestos con C1?
+
+```{r}
+# Guardamos el filtro en una variable y luego la graficamos
+var.temp <- separado.materiales %>% filter(Dope == 2.5, a == 3.242)
+
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs))  + geom_point() + ggtitle("Scatterplot ZnNd (SA)")
+  
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_boxplot() + ggtitle("Boxplot ZnNd 2.5 (SA)")
+```
+
+Parace que también existe mucha dispersión. Seguiremos analizando los demás.
+
+```{r}
+# Guardamos el filtro en una variable y luego la graficamos
+var.temp <- separado.materiales %>% filter(Dope == 2.5, a == 3.254)
+
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_point() + ggtitle("Scatterplot ZnSm (SA)")
+  
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_boxplot() + ggtitle("Boxplot ZnSm 2.5 (SA)")
+```
+Aquí los datos ya se muestran más inclinados hacia un valor.
+
+```{r}
+# Guardamos el filtro en una variable y luego la graficamos
+var.temp <- separado.materiales %>% filter(Dope == 2.5, a == 3.245)
+
+```
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_point() + ggtitle("Scatterplot ZnCe 2.5 (SA)")
+  
+```
+
+
+```{r}
+ggplot(data = var.temp, aes(x=Time, y = Abs)) + geom_boxplot() + ggtitle("Boxplot ZnCe 2.5 (SA)")
+```
+
+
+
+## Resultados
+Se analizaron los datos para el tratamiento C1, que en las gráficas dadas por el laboratorio eran los datos más alejados de los demás tratamientos. Se descubrió que en efecto los datos de C1 eran los que estaban generando ruido a una escala global (Si se tomaban todos los tratamientos, ya que al tener medias muy diferentes, se les consideraba outliers), pero que si se analizaban en específico, no mostraban rastro de outliers.
+
+
+Antes de continuar con lo demás, me quedó una inquietud en saber cuáles son las configuraciones de parámatros para los cuales la absorvancia es mayor a 0.5 en SA.
+
+```{r}
+database.SA %>% filter(Abs >=  0.5)
+```
+
+De esta información, podemos extraer que el conjunto se conforma solo de los tratamientos 0 (control) y C1 (2.5). Y también, viendo las gráficas de ratio de supervivencia puedo deducir que a mayor absorvancia mayor es el grado de supervivencia de las bacterias (SA). Por lo que se podría señalar que el tratamiento C1 es ineficaz contra la bacteria SA.
+
+
+## Normalización
+
+Ahora pasamos a la otra sección del análisis. Esto es normalizar los datos para obtener un mejor rendimiento del modelo.
+
+Primero verificamos que los datos que tenemos no son normales. Esto lo podemos hacer mediante una gráfica qqnorm
+
+```{r}
+qqnorm(database.EC[[6]], main = "QQplot: Absorvancia EC")
+qqline(database.EC[[6]])
+```
+En lo que consierne a mi opinión, la gráfica no muestra claramente una tendencia normal. Creo que los datos podrían ser no normales. Para ello vamos a realizar un test de normalidad.
+
+```{r}
+# Test de normalidad para la absorvancia sin normalizar
+shapiro.test(database.EC$Abs)
+```
+Dado que el p-value es muy cercano a cero, aceptamos la hipótesis alternativa de que los datos no son normales.
+
+Probaremos entonces a normaizarlos con los métodos de estandarización y de Min-max y ver cuál da mejores resultados.
+
+
+
+# Estandaarización
+```{r}
+# Formula a seguir: (valor - media) / desviación estandar
+# Sacar medias
+mean.vector.SA <- c()
+for (index in 1:6){
+  mean.value <- mean(database.SA[[index]])
+  mean.vector.SA <- append(mean.vector.SA, mean.value)
+}
+
+mean.vector.EC <- c()
+for (index in 1:6){
+  mean.value <- mean(database.EC[[index]])
+  mean.vector.EC <- append(mean.vector.EC, mean.value)
+}
+
+# Calcular desviación estandar
+sd.vector.SA <- c()
+for (index in 1:6){
+  sd.value <- sd(database.SA[[index]])
+  sd.vector.SA <- append(sd.vector.SA, sd.value)
+}
+
+sd.vector.EC <- c()
+for (index in 1:6){
+  sd.value <- sd(database.EC[[index]])
+  sd.vector.EC <- append(sd.vector.EC, sd.value)
+}
+```
+
+```{r}
+# Me aseguro que ambos datasets sean estructuras de tibble
+is_tibble(database.SA)
+```
+```{r}
+is_tibble(database.EC)
+```
+```{r}
+# Normalizamos toda la base de datos
+for (index in 1:6){
+  # Normalizar
+  database.EC[,index] <- (database.EC[,index] - mean.vector.EC[index]) / sd.vector.EC[index]
+}
+```
+
+Realizamos el mismo proceso para la otra base de datos.
+
+```{r}
+# Realizamos una copia
+database.SA.norm <- database.SA
+```
+
+```{r}
+# Normalizamos toda la base de datos
+for (index in 1:6){
+  # Normalizar
+  database.SA.norm[,index] <- (database.SA.norm[,index] - mean.vector.SA[index]) / sd.vector.SA[index]
+}
+```
+
+## Prueba de normalidad
+
+Volvemos a realizar una prueba de normalidad a las bases de datos ya estandarizadas
+
+```{r}
+# Test de normalidad para la absorvancia estandarizada
+shapiro.test(database.SA.norm$Abs)
+```
+```{r}
+# Test de normalidad para la absorvancia sin normalizar
+skewness(database.SA.norm$Abs)
+agostino.test(database.SA.norm$Abs)
+```
+```{r}
+qqnorm(database.SA.norm[[6]], main = "QQplot: Absorvancia SA")
+qqline(database.SA.norm[[6]])
+```
+```{r}
+qqnorm(database.SA.norm[[5]], main = "QQplot: a SA")
+qqline(database.SA.norm[[5]])
+```
+
+```{r}
+# Test de normalidad para la absorvancia estandarizada
+shapiro.test(database.EC$Abs)
+```
+
+```{r}
+# Test de normalidad para la absorvancia sin normalizar
+skewness(database.EC$Abs)
+agostino.test(database.EC$Abs)
+```
+
+```{r}
+qqnorm(database.EC[[6]])
+qqline(database.EC[[6]])
+```
+
+
+La base de datos SA mejora un poco al estandarizarla. Sin emabrgo, esta sigue sin ser normal. La base de datos EC no parece verse afectada por la normalización. probaremos hacer una transformación de variable para buscar un espacio donde pueda ser normal.
+
+
+## Transformación de variable
+Volvemos a cargar los datos
+```{r}
+# Leemos las bases de datos para las bacterias Straphilococcus aureus y Escherichia coli
+database.EC.transform <- read_csv("/media/veracrypt2/bacterias_materiales/bacterias_nanomateriales_2021/data/csv/06102021/dataset_06102021_v2_EC.csv")
+database.SA.transform <- read_csv("/media/veracrypt2/bacterias_materiales/bacterias_nanomateriales_2021/data/csv/06102021/dataset_06102021_v2_SA.csv")
+
+```
+
+```{r}
+#eliminamos las columnas vacias
+database.EC.transform <- database.EC.transform[,-c(7,8,9,10)]
+database.SA.transform <- database.SA.transform[,-c(7,8,9,10)]
+```
+
+
+```{r}
+# Convertimos a tibble
+database.EC.transform <- tibble(database.EC.transform)
+database.SA.transform <- tibble(database.SA.transform)
+```
+
+
+Solo vamos a transformar la absorvancia y luego estandarizamos toda la base de datos
+```{r}
+# Transformar datos
+database.EC.transform$Abs <- log(database.EC.transform$Abs)
+database.SA.transform$Abs <- log(database.SA.transform$Abs)
+```
+
+### Estandarizamos
+```{r}
+# Formula a seguir: (valor - media) / desviación estandar
+# Sacar medias
+mean.vector.SA <- c()
+for (index in 1:6){
+  mean.value <- mean(database.SA.transform[[index]])
+  mean.vector.SA <- append(mean.vector.SA, mean.value)
+}
+
+mean.vector.EC <- c()
+for (index in 1:6){
+  mean.value <- mean(database.EC.transform[[index]])
+  mean.vector.EC <- append(mean.vector.EC, mean.value)
+}
+
+# Calcular desviación estandar
+sd.vector.SA <- c()
+for (index in 1:6){
+  sd.value <- sd(database.SA.transform[[index]])
+  sd.vector.SA <- append(sd.vector.SA, sd.value)
+}
+
+sd.vector.EC <- c()
+for (index in 1:6){
+  sd.value <- sd(database.EC.transform[[index]])
+  sd.vector.EC <- append(sd.vector.EC, sd.value)
+}
+```
+
+```{r}
+database.EC.transform.norm <- database.EC.transform
+database.SA.transform.norm <- database.SA.transform
+```
+
+
+```{r}
+# Normalizamos toda la base de datos
+for (index in 1:6){
+  # Normalizar
+  database.SA.transform.norm[,index] <- (database.SA.transform.norm[,index] - mean.vector.SA[index]) / sd.vector.SA[index]
+}
+```
+```{r}
+# Normalizamos toda la base de datos
+for (index in 1:6){
+  # Normalizar
+  database.EC.transform.norm[,index] <- (database.EC.transform.norm[,index] - mean.vector.EC[index]) / sd.vector.EC[index]
+}
+```
+
+```{r}
+head(database.EC.transform.norm)
+```
+
+```{r}
+qqnorm(database.SA.transform[[6]], main = "QQplot: Absorvancia (SA) transformada")
+qqline(database.SA.transform[[6]])
+```
+```{r}
+qqnorm(database.SA.transform.norm[[6]], main = "QQplot: Absorvancia (SA) transformada y estandarizada")
+qqline(database.SA.transform.norm[[6]])
+```
+Se puede observar que tanto los datos transformados como los datos transformados y estandarizados parecen ya dar un mejor resultado para la normalidad.
+
+```{r}
+# Test de normalidad para la absorvancia
+skewness(database.SA.transform.norm$Abs)
+agostino.test(database.SA.transform.norm$Abs)
+```
+
+Según indica este test, los datos no son normales.
+
+```{r}
+# Test de normalidad para la absorvancia estandarizada
+shapiro.test(database.SA.transform.norm$Abs)
+```
+
+El otro test también indica que los datos no son normales.
+
+```{r}
+qqnorm(database.EC.transform[[6]])
+qqline(database.EC.transform[[6]])
+```
+
+```{r}
+# Test de normalidad para la absorvancia estandarizada
+shapiro.test(database.EC.transform.norm$Abs)
+```
+
+
+```{r}
+# Test de normalidad para la absorvancia
+skewness(database.EC.transform.norm$Abs)
+agostino.test(database.EC.transform.norm$Abs)
+```
+
+
+
+## Resultados
+
+No logramos hacer que los datos fueran normales. Esto creo se debe a la gran cantidad de outliers dados por los tratamientos C1 y C0.
+Entrenaremos una perceptrón multicapa para ver si puede aprender de los datos.
